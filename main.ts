@@ -6,25 +6,148 @@ const DEFAULT_SETTINGS: Settings = { rootFolder: 'JW Subtitles', language: 'E', 
 interface Item { id: string; title: string; year: number; pageUrl: string; }
 
 export default class JwSubtitlesPlugin extends Plugin {
-  settings!: Settings; cancelling = false;
-  async onload() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() }); this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; } }); this.addSettingTab(new SettingsTab(this.app, this)); }
-  private async log(source: TFile, message: string) { let text = await this.app.vault.read(source); if (!text.includes('## Sync log')) text += '\n\n## Sync log\n'; text += `- ${new Date().toISOString()} ${message}\n`; await this.app.vault.modify(source, text); }
-  async sync() {
-    this.cancelling = false; const source = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md'); if (!(source instanceof TFile)) { new Notice('Create JW Subtitle Sources.md with JW.ORG URLs first'); return; }
-    await this.log(source, '--- sync started ---'); const fullText = await this.app.vault.read(source); const sourceText = fullText.split(/^## Sync log$/m, 1)[0]; const urls = [...sourceText.matchAll(/https?:\/\/www\.jw\.org\/[^\s)]+/gi)].map(match => match[0]);
-    if (!urls.length) { await this.log(source, 'No JW.ORG URLs found'); new Notice('No JW.ORG URLs found'); return; }
-    let discovered = 0, downloaded = 0, skipped = 0, failed = 0; const seen = new Set<string>();
-    for (const url of urls) { if (this.cancelling) break; try { const html = (await requestUrl({ url })).text; const id = extractId(url) || extractId(html); await this.log(source, `source=${url} extractedId=${id ?? '(none)'}`); if (!id || seen.has(id)) { skipped++; continue; } seen.add(id); discovered++; const date = dateFor(id, html); const title = titleFor(id, html, date); const vtt = await this.download(id, source); if (!vtt) { skipped++; await this.log(source, `SKIP no VTT for ${id}`); continue; } await this.write({ id, title, year: date.year, pageUrl: url }, vtt); downloaded++; await this.log(source, `OK wrote ${title} year=${date.year}`); await sleep(this.settings.requestDelayMs); } catch (error) { failed++; await this.log(source, `ERROR ${error instanceof Error ? error.message : String(error)}`); } }
-    await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`); new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
+  settings!: Settings;
+  cancelling = false;
+
+  async onload() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() });
+    this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; } });
+    this.addSettingTab(new SettingsTab(this.app, this));
   }
-  async download(id: string, source: TFile): Promise<string | null> { const api = `https://b.jw-cdn.org/apis/mediator/v1/media-items/${encodeURIComponent(this.settings.language)}/${encodeURIComponent(id)}?clientType=www`; const data = (await requestUrl({ url: api })).json; const media = Array.isArray(data.media) ? data.media : []; const files = media[0]?.files || data.files || []; const candidates = files.flatMap((file: any) => [file.subtitles?.url, file.textTracks?.find((track: any) => track.src)?.src, file.tracks?.find((track: any) => track.src)?.src].filter(Boolean)); await this.log(source, `API ${api} mediaCount=${media.length} fileCount=${files.length} subtitleCandidates=${candidates.length}`); return candidates[0] ? (await requestUrl({ url: candidates[0] })).text : null; }
-  async write(item: Item, vtt: string) { const folder = normalizePath(`${this.settings.rootFolder}/${item.year}`); await this.app.vault.createFolder(this.settings.rootFolder).catch(() => undefined); await this.app.vault.createFolder(folder).catch(() => undefined); const path = normalizePath(`${folder}/${safe(item.title)} - ${item.id}.md`); const plain = vttToPlain(vtt); const sections = this.settings.outputMode === 'vtt' ? `## Subtitles\n\n${vtt.trim()}` : this.settings.outputMode === 'plain' ? `## Transcript\n\n${plain}` : `## Subtitles\n\n${vtt.trim()}\n\n## Transcript\n\n${plain}`; const content = ['---', `jwVideoId: ${item.id}`, `title: ${JSON.stringify(item.title)}`, `year: ${item.year}`, `source: ${item.pageUrl}`, `outputMode: ${this.settings.outputMode}`, '---', '', `# ${item.title}`, '', `Source: [JW.ORG](${item.pageUrl})`, '', sections, ''].join('\n'); const old = this.app.vault.getAbstractFileByPath(path); if (old instanceof TFile) await this.app.vault.modify(old, content); else await this.app.vault.create(path, content); }
+
+  private async log(source: TFile, message: string) {
+    let text = await this.app.vault.read(source);
+    if (!text.includes('## Sync log')) text += '\n\n## Sync log\n';
+    text += `- ${new Date().toISOString()} ${message}\n`;
+    await this.app.vault.modify(source, text);
+  }
+
+  async sync() {
+    this.cancelling = false;
+    const source = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md');
+    if (!(source instanceof TFile)) { new Notice('Create JW Subtitle Sources.md with JW.ORG URLs first'); return; }
+    await this.log(source, '--- sync started ---');
+    const fullText = await this.app.vault.read(source);
+    const sourceText = fullText.split(/^## Sync log$/m, 1)[0];
+    const urls = [...sourceText.matchAll(/https?:\/\/www\.jw\.org\/[^\s)]+/gi)].map(match => match[0]);
+    if (!urls.length) { await this.log(source, 'No JW.ORG URLs found'); new Notice('No JW.ORG URLs found'); return; }
+
+    let discovered = 0, downloaded = 0, skipped = 0, failed = 0;
+    const seen = new Set<string>();
+    for (const url of urls) {
+      if (this.cancelling) break;
+      try {
+        const html = (await requestUrl({ url })).text;
+        const id = extractId(url) || extractId(html);
+        await this.log(source, `source=${url} extractedId=${id ?? '(none)'}`);
+        if (!id || seen.has(id)) { skipped++; continue; }
+        seen.add(id); discovered++;
+        const date = dateFor(id, html);
+        const title = titleFor(id, html, date);
+        const vtt = await this.download(id, source);
+        if (!vtt) { skipped++; await this.log(source, `SKIP no VTT for ${id}`); continue; }
+        await this.write({ id, title, year: date.year, pageUrl: url }, vtt);
+        downloaded++;
+        await this.log(source, `OK wrote ${title} year=${date.year}`);
+        await sleep(this.settings.requestDelayMs);
+      } catch (error) {
+        failed++;
+        await this.log(source, `ERROR ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`);
+    new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
+  }
+
+  async download(id: string, source: TFile): Promise<string | null> {
+    const api = `https://b.jw-cdn.org/apis/mediator/v1/media-items/${encodeURIComponent(this.settings.language)}/${encodeURIComponent(id)}?clientType=www`;
+    const data = (await requestUrl({ url: api })).json;
+    const media = Array.isArray(data.media) ? data.media : [];
+    const files = media[0]?.files || data.files || [];
+    const candidates = files.flatMap((file: any) => [
+      file.subtitles?.url,
+      file.textTracks?.find((track: any) => track.src)?.src,
+      file.tracks?.find((track: any) => track.src)?.src,
+    ].filter(Boolean));
+    await this.log(source, `API ${api} mediaCount=${media.length} fileCount=${files.length} subtitleCandidates=${candidates.length}`);
+    return candidates[0] ? (await requestUrl({ url: candidates[0] })).text : null;
+  }
+
+  async write(item: Item, vtt: string) {
+    const folder = normalizePath(`${this.settings.rootFolder}/${item.year}`);
+    await this.app.vault.createFolder(this.settings.rootFolder).catch(() => undefined);
+    await this.app.vault.createFolder(folder).catch(() => undefined);
+    const path = normalizePath(`${folder}/${safe(item.title)} - ${item.id}.md`);
+    const plain = vttToPlain(vtt);
+    const sections = this.settings.outputMode === 'vtt'
+      ? `## Subtitles\n\n${vtt.trim()}`
+      : this.settings.outputMode === 'plain'
+        ? `## Transcript\n\n${plain}`
+        : `## Subtitles\n\n${vtt.trim()}\n\n## Transcript\n\n${plain}`;
+    const content = [
+      '---', `jwVideoId: ${item.id}`, `title: ${JSON.stringify(item.title)}`,
+      `year: ${item.year}`, `source: ${item.pageUrl}`, `outputMode: ${this.settings.outputMode}`,
+      '---', '', `# ${item.title}`, '', `Source: [JW.ORG](${item.pageUrl})`, '', sections, '',
+    ].join('\n');
+    const old = this.app.vault.getAbstractFileByPath(path);
+    if (old instanceof TFile) await this.app.vault.modify(old, content);
+    else await this.app.vault.create(path, content);
+  }
 }
-class SettingsTab extends PluginSettingTab { constructor(app: App, public plugin: JwSubtitlesPlugin) { super(app, plugin); } display() { this.containerEl.empty(); new Setting(this.containerEl).setName('Root folder').addText(t => t.setValue(this.plugin.settings.rootFolder).onChange(async v => { this.plugin.settings.rootFolder = v || DEFAULT_SETTINGS.rootFolder; await this.plugin.saveData(this.plugin.settings); })); new Setting(this.containerEl).setName('Language code').addText(t => t.setValue(this.plugin.settings.language).onChange(async v => { this.plugin.settings.language = v.toUpperCase(); await this.plugin.saveData(this.plugin.settings); })); new Setting(this.containerEl).setName('Output format').addDropdown(d => d.addOption('vtt', 'Raw VTT').addOption('plain', 'Plain transcript').addOption('both', 'Raw VTT and plain transcript').setValue(this.plugin.settings.outputMode).onChange(async v => { this.plugin.settings.outputMode = v as OutputMode; await this.plugin.saveData(this.plugin.settings); })); } }
-function extractId(value: string): string | null { let decoded = value; try { decoded = decodeURIComponent(value); } catch { } const direct = decoded.match(/(?:^|[/?#=&])(pub-[A-Za-z0-9_-]+)(?=$|[/?#&])/i)?.[1]; if (direct) return direct; try { const url = new URL(value); for (const part of [url.searchParams.get('lank'), url.searchParams.get('docid'), url.searchParams.get('item')]) { const match = part?.match(/pub-[A-Za-z0-9_-]+/i); if (match) return match[0]; } } catch { } return null; }
-function dateFor(id: string, html: string): { year: number; month?: number } { const heading = pageBroadcastHeading(html); const headingDate = heading.match(/JW Broadcasting[—-]\s*[^<]*?\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b/i); if (headingDate) return { year: Number(headingDate[2]), month: monthNumber(headingDate[1]) }; const legacy = id.match(/^pub-jwb_(\d{4})(\d{2})_\d+_VIDEO$/i); if (legacy) return { year: Number(legacy[1]), month: Number(legacy[2]) }; const current = new Date(); return { year: current.getFullYear() }; }
-function titleFor(id: string, html: string, date: { year: number; month?: number }): string { const heading = pageBroadcastHeading(html); const match = heading.match(/JW Broadcasting[—-]\s*(.+)$/i); if (match) { return match[1].replace(/:/g, ' -').replace(/\s+/g, ' ').trim(); } if (date.month) return `${monthName(date.month)} ${date.year} JW Broadcasting`; return id; }
-function pageBroadcastHeading(html: string): string { const candidates = [...html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)].map(match => decodeHtml(match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); const heading = candidates.find(value => /JW Broadcasting/i.test(value)); if (heading) return heading; return decodeHtml(meta(html, 'og:title')); }
+
+class SettingsTab extends PluginSettingTab {
+  constructor(app: App, public plugin: JwSubtitlesPlugin) { super(app, plugin); }
+  display() {
+    this.containerEl.empty();
+    new Setting(this.containerEl).setName('Root folder').addText(t => t.setValue(this.plugin.settings.rootFolder).onChange(async v => { this.plugin.settings.rootFolder = v || DEFAULT_SETTINGS.rootFolder; await this.plugin.saveData(this.plugin.settings); }));
+    new Setting(this.containerEl).setName('Language code').addText(t => t.setValue(this.plugin.settings.language).onChange(async v => { this.plugin.settings.language = v.toUpperCase(); await this.plugin.saveData(this.plugin.settings); }));
+    new Setting(this.containerEl).setName('Output format').addDropdown(d => d.addOption('vtt', 'Raw VTT').addOption('plain', 'Plain transcript').addOption('both', 'Raw VTT and plain transcript').setValue(this.plugin.settings.outputMode).onChange(async v => { this.plugin.settings.outputMode = v as OutputMode; await this.plugin.saveData(this.plugin.settings); }));
+  }
+}
+
+function extractId(value: string): string | null {
+  let decoded = value;
+  try { decoded = decodeURIComponent(value); } catch { }
+  const direct = decoded.match(/(?:^|[/?#=&])(pub-[A-Za-z0-9_-]+)(?=$|[/?#&])/i)?.[1];
+  if (direct) return direct;
+  try {
+    const url = new URL(value);
+    for (const part of [url.searchParams.get('lank'), url.searchParams.get('docid'), url.searchParams.get('item')]) {
+      const match = part?.match(/pub-[A-Za-z0-9_-]+/i);
+      if (match) return match[0];
+    }
+  } catch { }
+  return null;
+}
+
+function dateFor(id: string, html: string): { year: number; month?: number } {
+  const heading = pageBroadcastHeading(html);
+  const headingDate = heading.match(/JW Broadcasting[—-]\s*[^<]*?\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b/i);
+  if (headingDate) return { year: Number(headingDate[2]), month: monthNumber(headingDate[1]) };
+  const legacy = id.match(/^pub-jwb_(\d{4})(\d{2})_\d+_VIDEO$/i);
+  if (legacy) return { year: Number(legacy[1]), month: Number(legacy[2]) };
+  return { year: new Date().getFullYear() };
+}
+
+function titleFor(id: string, html: string, date: { year: number; month?: number }): string {
+  const heading = pageBroadcastHeading(html);
+  const match = heading.match(/JW Broadcasting[—-]\s*(.+)$/i);
+  if (match) return match[1].replace(/:/g, ' -').replace(/\s+/g, ' ').trim();
+  if (date.month) return `${monthName(date.month)} ${date.year} JW Broadcasting`;
+  return id;
+}
+
+function pageBroadcastHeading(html: string): string {
+  const candidates = [...html.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)]
+    .map(match => {
+      const text = match[1].replace(/<[^>]+>/g, ' ');
+      return decodeHtml(text.replace(/\s+/g, ' ').trim());
+    });
+  const heading = candidates.find(value => /JW Broadcasting/i.test(value));
+  return heading || decodeHtml(meta(html, 'og:title'));
+}
+
 function monthNumber(name: string): number { return ['january','february','march','april','may','june','july','august','september','october','november','december'].indexOf(name.toLowerCase()) + 1; }
 function monthName(month: number): string { return new Date(2000, month - 1, 1).toLocaleString('en-GB', { month: 'long' }); }
 function vttToPlain(vtt: string): string { return vtt.split(/\r?\n\r?\n/).map(block => { const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean); if (!lines.length || lines[0].toUpperCase() === 'WEBVTT') return ''; const timeIndex = lines.findIndex(line => line.includes('-->')); const textLines = timeIndex >= 0 ? lines.slice(timeIndex + 1) : lines; return textLines.join(' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(); }).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(); }
