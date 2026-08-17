@@ -1,0 +1,1 @@
+{"compilerOptions":{"baseUrl":"./","paths":{"obsidian":["node_modules/obsidian"]},"target":"es6","module":"esnext","moduleResolution":"bundler","strict":true,"skipLibCheck":true,"allowJs":false,"noImplicitAny":true,"esModuleInterop":true},"include":["main.ts"]}
