@@ -282,13 +282,15 @@ function extractId(value: string): string | null {
   try {
     decoded = decodeURIComponent(value);
   } catch {}
-  const direct = decoded.match(/(?:^|[/?#=&])(pub-[A-Za-z0-9_-]+)(?=$|[/?#&])/i)?.[1];
+  const direct = decoded.match(/(?:^|[/?#=&])((?:pub|docid)-[A-Za-z0-9_-]+)(?=$|[/?#&])/i)?.[1];
   if (direct) return direct;
   try {
     const url = new URL(value);
     for (const part of [url.searchParams.get('lank'), url.searchParams.get('docid'), url.searchParams.get('item')]) {
-      const match = part?.match(/pub-[A-Za-z0-9_-]+/i);
+      if (!part) continue;
+      const match = part.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i);
       if (match) return match[0];
+      if (/^\d+$/.test(part)) return `docid-${part}_1_VIDEO`;
     }
   } catch {}
   return null;
@@ -343,7 +345,7 @@ function parseTitleAndSpeaker(rawTitle: string, category: Category, id: string):
 }
 
 function shortId(id: string): string {
-  return id.replace(/^pub-/, '').replace(/_VIDEO$/i, '');
+  return id.replace(/^(?:pub|docid)-/, '').replace(/_VIDEO$/i, '');
 }
 
 function vttToPlain(vtt: string): string {
