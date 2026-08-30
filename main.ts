@@ -28,11 +28,11 @@ const DEFAULT_SETTINGS: Settings = {
   onlineMorningWorship: true
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; key: string; url: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', key: 'StudioMonthlyPrograms', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioMonthlyPrograms', enabled: 'onlineBroadcasting' },
-  { category: 'talks', key: 'StudioTalks', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioTalks', enabled: 'onlineTalks' },
-  { category: 'news-reports', key: 'StudioNewsReports', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioNewsReports', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', key: 'VODPgmEvtMorningWorship', url: 'https://www.jw.org/en/library/videos/#en/categories/VODPgmEvtMorningWorship', enabled: 'onlineMorningWorship' }
+const ONLINE_CATEGORIES: Array<{ category: Category; key: string; enabled: keyof Settings }> = [
+  { category: 'broadcasting', key: 'StudioMonthlyPrograms', enabled: 'onlineBroadcasting' },
+  { category: 'talks', key: 'StudioTalks', enabled: 'onlineTalks' },
+  { category: 'news-reports', key: 'StudioNewsReports', enabled: 'onlineNewsReports' },
+  { category: 'morning-worship', key: 'VODPgmEvtMorningWorship', enabled: 'onlineMorningWorship' }
 ];
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -129,9 +129,13 @@ export default class JwSubtitlesPlugin extends Plugin {
     const links: SourceLink[] = [];
     for (const source of ONLINE_CATEGORIES) {
       if (!this.settings[source.enabled] || this.cancelling) continue;
-      const html = (await requestUrl({ url: source.url })).text;
-      const ids = extractIds(html);
-      for (const id of ids) links.push({ url: directVideoUrl(id), category: source.category });
+      const api = `https://b.jw-cdn.org/apis/mediator/v1/categories/E/${encodeURIComponent(source.key)}?clientType=www`;
+      const data = (await requestUrl({ url: api })).json;
+      const items = data.items || [];
+      for (const item of items) {
+        const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
+        if (id) links.push({ url: directVideoUrl(id), category: source.category });
+      }
       await sleep(this.settings.requestDelayMs);
     }
     return links;
