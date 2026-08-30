@@ -28,11 +28,11 @@ const DEFAULT_SETTINGS: Settings = {
   onlineMorningWorship: true
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; key: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', key: 'StudioMonthlyPrograms', enabled: 'onlineBroadcasting' },
-  { category: 'talks', key: 'StudioTalks', enabled: 'onlineTalks' },
-  { category: 'news-reports', key: 'StudioNewsReports', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', key: 'VODPgmEvtMorningWorship', enabled: 'onlineMorningWorship' }
+const ONLINE_CATEGORIES: Array<{ category: Category; vodUrl: string; enabled: keyof Settings }> = [
+  { category: 'broadcasting', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioMonthlyPrograms/VODp-JWB?clientType=www', enabled: 'onlineBroadcasting' },
+  { category: 'talks', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioTalks/VODp-JWB?clientType=www', enabled: 'onlineTalks' },
+  { category: 'news-reports', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioNewsReports/VODp-JWB?clientType=www', enabled: 'onlineNewsReports' },
+  { category: 'morning-worship', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/VODPgmEvtMorningWorship/VODp-JWB?clientType=www', enabled: 'onlineMorningWorship' }
 ];
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -129,12 +129,16 @@ export default class JwSubtitlesPlugin extends Plugin {
     const links: SourceLink[] = [];
     for (const source of ONLINE_CATEGORIES) {
       if (!this.settings[source.enabled] || this.cancelling) continue;
-      const api = `https://b.jw-cdn.org/apis/mediator/v1/categories/E/${encodeURIComponent(source.key)}?clientType=www`;
-      const data = (await requestUrl({ url: api })).json;
-      const items = data.items || [];
-      for (const item of items) {
-        const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
-        if (id) links.push({ url: directVideoUrl(id), category: source.category });
+      try {
+        const data = (await requestUrl({ url: source.vodUrl })).json;
+        const items = data.items || [];
+        for (const item of items) {
+          const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
+          if (id) links.push({ url: directVideoUrl(id), category: source.category });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.log(null, `ERROR fetching ${source.vodUrl}: ${message}`);
       }
       await sleep(this.settings.requestDelayMs);
     }
