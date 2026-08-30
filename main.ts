@@ -1,7 +1,6 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl } from 'obsidian';
 
 type OutputMode = 'vtt' | 'plain' | 'both';
-type SyncSource = 'file' | 'online';
 type Category = 'broadcasting' | 'talks' | 'news-reports' | 'morning-worship' | 'other';
 
 interface Settings {
@@ -9,34 +8,17 @@ interface Settings {
   language: string;
   requestDelayMs: number;
   outputMode: OutputMode;
-  syncSource: SyncSource;
-  onlineBroadcasting: boolean;
-  onlineTalks: boolean;
-  onlineNewsReports: boolean;
-  onlineMorningWorship: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
   rootFolder: 'JW Subtitles',
   language: 'E',
   requestDelayMs: 750,
-  outputMode: 'both',
-  syncSource: 'file',
-  onlineBroadcasting: true,
-  onlineTalks: true,
-  onlineNewsReports: true,
-  onlineMorningWorship: true
+  outputMode: 'both'
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; query: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', query: 'JW Broadcasting', enabled: 'onlineBroadcasting' },
-  { category: 'talks', query: 'Studio Talks', enabled: 'onlineTalks' },
-  { category: 'news-reports', query: 'Governing Body Update', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', query: 'Morning Worship', enabled: 'onlineMorningWorship' }
-];
-
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
-interface SourceLink { url: string; title?: string; category?: Category; }
+interface SourceLink { url: string; title?: string; }
 
 export default class JwSubtitlesPlugin extends Plugin {
   settings!: Settings;
@@ -49,8 +31,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
-  private async log(source: TFile | null, message: string) {
-    if (!source) return;
+  private async log(source: TFile, message: string) {
     let text = await this.app.vault.read(source);
     if (!text.includes('## Sync log')) text += '\n\n## Sync log\n';
     text += `- ${new Date().toISOString()} ${message}\n`;
@@ -59,27 +40,22 @@ export default class JwSubtitlesPlugin extends Plugin {
 
   async sync() {
     this.cancelling = false;
-    const sourceFile = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md');
-    const source = sourceFile instanceof TFile ? sourceFile : null;
-    await this.log(source, `--- sync started source=${this.settings.syncSource} ---`);
-
-    let links: SourceLink[] = [];
-    try {
-      links = this.settings.syncSource === 'online' ? await this.onlineLinks(source) : await this.fileLinks(source);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.log(source, `ERROR collecting sources: ${message}`);
-      new Notice(`Could not collect video sources: ${message}`);
+    const source = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md');
+    if (!(source instanceof TFile)) {
+      new Notice('Create JW Subtitle Sources.md with JW.ORG video URLs');
       return;
     }
+
+    await this.log(source, '--- sync started ---');
+    const text = (await this.app.vault.read(source)).split(/^## Sync log$/m, 1)[0];
+    const links = sourceLinks(text);
 
     if (!links.length) {
-      await this.log(source, 'No JW.ORG video links found');
-      new Notice('No JW.ORG video links found');
+      await this.log(source, 'No JW.ORG URLs found');
+      new Notice('No JW.ORG URLs found in JW Subtitle Sources.md');
       return;
     }
 
-    const existingIds = this.settings.syncSource === 'online' ? await this.existingVideoIds() : new Set<string>();
     let discovered = 0;
     let downloaded = 0;
     let skipped = 0;
@@ -90,7 +66,7 @@ export default class JwSubtitlesPlugin extends Plugin {
       if (this.cancelling) break;
       try {
         const id = extractId(link.url);
-        if (!id || seen.has(id) || existingIds.has(id)) {
+        if (!id || seen.has(id)) {
           skipped++;
           continue;
         }
@@ -100,12 +76,11 @@ export default class JwSubtitlesPlugin extends Plugin {
         const media = await this.fetchMedia(id, link);
         if (!media) {
           skipped++;
-          await this.log(source, `SKIP no VTT or media info for ${id}`);
+          await this.log(source, `SKIP no VTT for ${id}`);
           continue;
         }
 
         await this.write(media);
-        existingIds.add(id);
         downloaded++;
         await this.log(source, `OK wrote "${media.title}" (${media.category}, year=${media.year})`);
         await sleep(this.settings.requestDelayMs);
@@ -116,51 +91,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     }
 
     await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`);
-    new Notice(`Sync complete: ${downloaded} notes written; ${discovered} new, ${skipped} skipped, ${failed} failed`);
-  }
-
-  private async fileLinks(source: TFile | null): Promise<SourceLink[]> {
-    if (!source) throw new Error('Create JW Subtitle Sources.md or switch Sync source to Online categories');
-    const text = (await this.app.vault.read(source)).split(/^## Sync log$/m, 1)[0];
-    return sourceLinks(text);
-  }
-
-  private async onlineLinks(source: TFile | null): Promise<SourceLink[]> {
-    const links: SourceLink[] = [];
-    for (const cat of ONLINE_CATEGORIES) {
-      if (!this.settings[cat.enabled] || this.cancelling) {
-        await this.log(source, `SKIP category ${cat.category} (enabled=${this.settings[cat.enabled]})`);
-        continue;
-      }
-      try {
-        const searchUrl = `https://www.jw.org/en/search/?query=${encodeURIComponent(cat.query)}&type=video`;
-        await this.log(source, `SEARCH ${cat.category}: ${searchUrl}`);
-        const html = (await requestUrl({ url: searchUrl })).text;
-        const ids = extractIds(html);
-        await this.log(source, `PARSED ${cat.category} found=${ids.length} ids`);
-        for (const id of ids) {
-          links.push({ url: directVideoUrl(id), category: cat.category });
-          await this.log(source, `FOUND ${cat.category} id=${id}`);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await this.log(source, `ERROR searching ${cat.category}: ${message}`);
-      }
-      await sleep(this.settings.requestDelayMs);
-    }
-    await this.log(source, `ONLINE total links=${links.length}`);
-    return links;
-  }
-
-  private async existingVideoIds(): Promise<Set<string>> {
-    const ids = new Set<string>();
-    const root = normalizePath(this.settings.rootFolder);
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (!file.path.startsWith(`${root}/`)) continue;
-      const cached = this.app.metadataCache.getFileCache(file)?.frontmatter?.jwVideoId;
-      if (typeof cached === 'string') ids.add(cached);
-    }
-    return ids;
+    new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
   }
 
   async fetchMedia(id: string, link: SourceLink): Promise<MediaDetails | null> {
@@ -175,7 +106,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     if (!vtt) return null;
 
     const rawTitle = decodeHtml(item.title || link.title || id).trim();
-    const category = link.category || categoryFor(link.url, item.categoryKey);
+    const category = categoryFor(link.url, item.categoryKey);
     const { title, speaker } = parseTitleAndSpeaker(rawTitle, category, id);
     return { id, title, speaker, year: parseYear(id, item.firstPublished, rawTitle), category, pageUrl: directVideoUrl(id), vtt };
   }
@@ -206,13 +137,6 @@ class SettingsTab extends PluginSettingTab {
     this.containerEl.empty();
     new Setting(this.containerEl).setName('Root folder').addText(text => text.setValue(this.plugin.settings.rootFolder).onChange(async value => { this.plugin.settings.rootFolder = value || DEFAULT_SETTINGS.rootFolder; await this.save(); }));
     new Setting(this.containerEl).setName('Language code').addText(text => text.setValue(this.plugin.settings.language).onChange(async value => { this.plugin.settings.language = value.toUpperCase(); await this.save(); }));
-    new Setting(this.containerEl).setName('Sync source').setDesc('Use a local source file or discover videos from the selected JW.ORG categories.').addDropdown(dropdown => dropdown.addOption('file', 'JW Subtitle Sources.md').addOption('online', 'Online categories (automatic)').setValue(this.plugin.settings.syncSource).onChange(async value => { this.plugin.settings.syncSource = value as SyncSource; await this.save(); this.display(); }));
-    if (this.plugin.settings.syncSource === 'online') {
-      new Setting(this.containerEl).setName('Broadcasting').setDesc('JW Broadcasting monthly programs.').addToggle(toggle => toggle.setValue(this.plugin.settings.onlineBroadcasting).onChange(async value => { this.plugin.settings.onlineBroadcasting = value; await this.save(); }));
-      new Setting(this.containerEl).setName('Talks').setDesc('Studio talks and related video talks.').addToggle(toggle => toggle.setValue(this.plugin.settings.onlineTalks).onChange(async value => { this.plugin.settings.onlineTalks = value; await this.save(); }));
-      new Setting(this.containerEl).setName('News Reports').setDesc('Governing Body Updates and other news reports.').addToggle(toggle => toggle.setValue(this.plugin.settings.onlineNewsReports).onChange(async value => { this.plugin.settings.onlineNewsReports = value; await this.save(); }));
-      new Setting(this.containerEl).setName('Morning Worship').setDesc('Morning Worship programs.').addToggle(toggle => toggle.setValue(this.plugin.settings.onlineMorningWorship).onChange(async value => { this.plugin.settings.onlineMorningWorship = value; await this.save(); }));
-    }
     new Setting(this.containerEl).setName('Output format').addDropdown(dropdown => dropdown.addOption('vtt', 'Raw VTT').addOption('plain', 'Formatted transcript').addOption('both', 'Raw VTT and formatted transcript').setValue(this.plugin.settings.outputMode).onChange(async value => { this.plugin.settings.outputMode = value as OutputMode; await this.save(); }));
   }
 }
