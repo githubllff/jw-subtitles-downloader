@@ -65,7 +65,7 @@ export default class JwSubtitlesPlugin extends Plugin {
 
     let links: SourceLink[] = [];
     try {
-      links = this.settings.syncSource === 'online' ? await this.onlineLinks() : await this.fileLinks(source);
+      links = this.settings.syncSource === 'online' ? await this.onlineLinks(source) : await this.fileLinks(source);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.log(source, `ERROR collecting sources: ${message}`);
@@ -125,23 +125,34 @@ export default class JwSubtitlesPlugin extends Plugin {
     return sourceLinks(text);
   }
 
-  private async onlineLinks(): Promise<SourceLink[]> {
+  private async onlineLinks(source: TFile | null): Promise<SourceLink[]> {
     const links: SourceLink[] = [];
-    for (const source of ONLINE_CATEGORIES) {
-      if (!this.settings[source.enabled] || this.cancelling) continue;
+    for (const cat of ONLINE_CATEGORIES) {
+      if (!this.settings[cat.enabled] || this.cancelling) {
+        await this.log(source, `SKIP category ${cat.category} (enabled=${this.settings[cat.enabled]})`);
+        continue;
+      }
       try {
-        const data = (await requestUrl({ url: source.vodUrl })).json;
+        await this.log(source, `FETCH ${cat.category} from ${cat.vodUrl}`);
+        const res = await requestUrl({ url: cat.vodUrl });
+        await this.log(source, `RESPONSE ${cat.category} status=${res.status} size=${res.text?.length ?? 0} bytes`);
+        const data = res.json;
         const items = data.items || [];
+        await this.log(source, `PARSED ${cat.category} items=${items.length} keys=${Object.keys(data).join(',')}`);
         for (const item of items) {
           const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
-          if (id) links.push({ url: directVideoUrl(id), category: source.category });
+          if (id) {
+            links.push({ url: directVideoUrl(id), category: cat.category });
+            await this.log(source, `FOUND ${cat.category} id=${id}`);
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await this.log(null, `ERROR fetching ${source.vodUrl}: ${message}`);
+        await this.log(source, `ERROR fetching ${cat.category}: ${message}`);
       }
       await sleep(this.settings.requestDelayMs);
     }
+    await this.log(source, `ONLINE total links=${links.length}`);
     return links;
   }
 
