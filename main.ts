@@ -28,11 +28,11 @@ const DEFAULT_SETTINGS: Settings = {
   onlineMorningWorship: true
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; url: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioMonthlyPrograms', enabled: 'onlineBroadcasting' },
-  { category: 'talks', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioTalks', enabled: 'onlineTalks' },
-  { category: 'news-reports', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioNewsReports', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', url: 'https://www.jw.org/en/library/videos/#en/categories/VODPgmEvtMorningWorship', enabled: 'onlineMorningWorship' }
+const ONLINE_CATEGORIES: Array<{ category: Category; query: string; enabled: keyof Settings }> = [
+  { category: 'broadcasting', query: 'JW Broadcasting', enabled: 'onlineBroadcasting' },
+  { category: 'talks', query: 'Studio Talks', enabled: 'onlineTalks' },
+  { category: 'news-reports', query: 'Governing Body Update', enabled: 'onlineNewsReports' },
+  { category: 'morning-worship', query: 'Morning Worship', enabled: 'onlineMorningWorship' }
 ];
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -133,9 +133,9 @@ export default class JwSubtitlesPlugin extends Plugin {
         continue;
       }
       try {
-        await this.log(source, `FETCH ${cat.category} from ${cat.url}`);
-        const html = (await requestUrl({ url: cat.url })).text;
-        await this.log(source, `RESPONSE ${cat.category} size=${html.length} bytes`);
+        const searchUrl = `https://www.jw.org/en/search/?query=${encodeURIComponent(cat.query)}&type=video`;
+        await this.log(source, `SEARCH ${cat.category}: ${searchUrl}`);
+        const html = (await requestUrl({ url: searchUrl })).text;
         const ids = extractIds(html);
         await this.log(source, `PARSED ${cat.category} found=${ids.length} ids`);
         for (const id of ids) {
@@ -144,7 +144,7 @@ export default class JwSubtitlesPlugin extends Plugin {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await this.log(source, `ERROR fetching ${cat.category}: ${message}`);
+        await this.log(source, `ERROR searching ${cat.category}: ${message}`);
       }
       await sleep(this.settings.requestDelayMs);
     }
