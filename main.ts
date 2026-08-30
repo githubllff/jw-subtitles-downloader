@@ -28,11 +28,11 @@ const DEFAULT_SETTINGS: Settings = {
   onlineMorningWorship: true
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; apiPath: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', apiPath: '/apis/mediator/v1/categories/E/StudioMonthlyPrograms?clientType=www', enabled: 'onlineBroadcasting' },
-  { category: 'talks', apiPath: '/apis/mediator/v1/categories/E/StudioTalks?clientType=www', enabled: 'onlineTalks' },
-  { category: 'news-reports', apiPath: '/apis/mediator/v1/categories/E/StudioNewsReports?clientType=www', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', apiPath: '/apis/mediator/v1/categories/E/VODPgmEvtMorningWorship?clientType=www', enabled: 'onlineMorningWorship' }
+const ONLINE_CATEGORIES: Array<{ category: Category; url: string; enabled: keyof Settings }> = [
+  { category: 'broadcasting', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioMonthlyPrograms', enabled: 'onlineBroadcasting' },
+  { category: 'talks', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioTalks', enabled: 'onlineTalks' },
+  { category: 'news-reports', url: 'https://www.jw.org/en/library/videos/#en/categories/StudioNewsReports', enabled: 'onlineNewsReports' },
+  { category: 'morning-worship', url: 'https://www.jw.org/en/library/videos/#en/categories/VODPgmEvtMorningWorship', enabled: 'onlineMorningWorship' }
 ];
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -133,19 +133,14 @@ export default class JwSubtitlesPlugin extends Plugin {
         continue;
       }
       try {
-        const api = `https://b.jw-cdn.org${cat.apiPath}`;
-        await this.log(source, `FETCH ${cat.category} from ${api}`);
-        const res = await requestUrl({ url: api });
-        await this.log(source, `RESPONSE ${cat.category} status=${res.status} size=${res.text?.length ?? 0} bytes`);
-        const data = res.json;
-        const items = data.items || data.media || [];
-        await this.log(source, `PARSED ${cat.category} items=${items.length} keys=${Object.keys(data).join(',')}`);
-        for (const item of items) {
-          const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
-          if (id) {
-            links.push({ url: directVideoUrl(id), category: cat.category });
-            await this.log(source, `FOUND ${cat.category} id=${id}`);
-          }
+        await this.log(source, `FETCH ${cat.category} from ${cat.url}`);
+        const html = (await requestUrl({ url: cat.url })).text;
+        await this.log(source, `RESPONSE ${cat.category} size=${html.length} bytes`);
+        const ids = extractIds(html);
+        await this.log(source, `PARSED ${cat.category} found=${ids.length} ids`);
+        for (const id of ids) {
+          links.push({ url: directVideoUrl(id), category: cat.category });
+          await this.log(source, `FOUND ${cat.category} id=${id}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
