@@ -28,11 +28,11 @@ const DEFAULT_SETTINGS: Settings = {
   onlineMorningWorship: true
 };
 
-const ONLINE_CATEGORIES: Array<{ category: Category; vodUrl: string; enabled: keyof Settings }> = [
-  { category: 'broadcasting', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioMonthlyPrograms/VODp-JWB?clientType=www', enabled: 'onlineBroadcasting' },
-  { category: 'talks', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioTalks/VODp-JWB?clientType=www', enabled: 'onlineTalks' },
-  { category: 'news-reports', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/StudioNewsReports/VODp-JWB?clientType=www', enabled: 'onlineNewsReports' },
-  { category: 'morning-worship', vodUrl: 'https://b.jw-cdn.org/apis/mediator/v1/categories/E/VODPgmEvtMorningWorship/VODp-JWB?clientType=www', enabled: 'onlineMorningWorship' }
+const ONLINE_CATEGORIES: Array<{ category: Category; apiPath: string; enabled: keyof Settings }> = [
+  { category: 'broadcasting', apiPath: '/apis/mediator/v1/categories/E/StudioMonthlyPrograms?clientType=www', enabled: 'onlineBroadcasting' },
+  { category: 'talks', apiPath: '/apis/mediator/v1/categories/E/StudioTalks?clientType=www', enabled: 'onlineTalks' },
+  { category: 'news-reports', apiPath: '/apis/mediator/v1/categories/E/StudioNewsReports?clientType=www', enabled: 'onlineNewsReports' },
+  { category: 'morning-worship', apiPath: '/apis/mediator/v1/categories/E/VODPgmEvtMorningWorship?clientType=www', enabled: 'onlineMorningWorship' }
 ];
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -133,11 +133,12 @@ export default class JwSubtitlesPlugin extends Plugin {
         continue;
       }
       try {
-        await this.log(source, `FETCH ${cat.category} from ${cat.vodUrl}`);
-        const res = await requestUrl({ url: cat.vodUrl });
+        const api = `https://b.jw-cdn.org${cat.apiPath}`;
+        await this.log(source, `FETCH ${cat.category} from ${api}`);
+        const res = await requestUrl({ url: api });
         await this.log(source, `RESPONSE ${cat.category} status=${res.status} size=${res.text?.length ?? 0} bytes`);
         const data = res.json;
-        const items = data.items || [];
+        const items = data.items || data.media || [];
         await this.log(source, `PARSED ${cat.category} items=${items.length} keys=${Object.keys(data).join(',')}`);
         for (const item of items) {
           const id = item.lank?.match(/(?:pub|docid)-[A-Za-z0-9_-]+/i)?.[0];
