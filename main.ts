@@ -217,7 +217,9 @@ function sourceLinks(text: string): SourceLink[] {
 
 function extractIds(value: string): string[] {
   const ids = new Set<string>();
-  for (const match of value.matchAll(/(?:pub|docid)-[A-Za-z0-9_-]+/gi)) ids.add(match[0]);
+  for (const match of value.matchAll(/(?:pub-jwb[a-z0-9_-]*|docid-\d+)_\d+_VIDEO/gi)) {
+    ids.add(match[0]);
+  }
   return [...ids];
 }
 
