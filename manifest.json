@@ -1,1 +1,10 @@
-{"id":"jw-subtitles-downloader","name":"JW Subtitles Downloader","version":"0.1.0","minAppVersion":"1.5.0","description":"Download JW.ORG video subtitles into year-organised notes.","author":"githubllff","authorUrl":"https://github.com/githubllff","isDesktopOnly":true}
+{
+  "id": "jw-subtitles-downloader",
+  "name": "JW Subtitles Downloader",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Download and format JW.ORG video transcripts with paragraph breaks",
+  "author": "Luke",
+  "isDesktopOnly": false,
+  "fundingUrl": ""
+}
