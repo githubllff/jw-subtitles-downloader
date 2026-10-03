@@ -75,13 +75,9 @@ export default class JwSubtitlesPlugin extends Plugin {
     let skipped = 0;
     let failed = 0;
     const seen = new Set<string>();
-    const total = links.length;
 
-    for (let i = 0; i < links.length; i++) {
+    for (const link of links) {
       if (this.cancelling) break;
-      const link = links[i];
-      this.updateStatus(`${i + 1}/${total}`);
-      
       try {
         const id = extractId(link.url);
         if (!id || seen.has(id)) {
