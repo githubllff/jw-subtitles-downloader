@@ -126,7 +126,7 @@ export default class JwSubtitlesPlugin extends Plugin {
       if (!vtt) return null;
 
       const rawTitle = decodeHtml(item.title || link.title || id).trim();
-      const category = categoryFor(link.url, item.categoryKey);
+      const category = categoryFor(link.url, item.categoryKey, id);
       const { title, speaker } = parseTitleAndSpeaker(rawTitle, category, id);
       return { id, title, speaker, year: parseYear(id, item.firstPublished, rawTitle), category, pageUrl: directVideoUrl(id), vtt };
     } catch (error) {
@@ -183,7 +183,6 @@ function sourceLinks(text: string): SourceLink[] {
 
 function extractIds(value: string): string[] {
   const ids = new Set<string>();
-  // Match complete video IDs: pub-xxx_N_VIDEO or docid-xxx_N_VIDEO
   for (const match of value.matchAll(/(?:pub-[a-z0-9_-]+|docid-\d+)_\d+_VIDEO/gi)) {
     ids.add(match[0]);
   }
@@ -192,12 +191,29 @@ function extractIds(value: string): string[] {
 
 function extractId(value: string): string | null { return extractIds(value)[0] || null; }
 function directVideoUrl(id: string): string { return `https://www.jw.org/en/library/videos/?appLanguage=E&item=${encodeURIComponent(id)}`; }
-function categoryFor(url: string, categoryKey?: string): Category {
-  const value = `${url} ${categoryKey || ''}`;
-  if (/StudioMonthlyPrograms/i.test(value)) return 'broadcasting';
-  if (/StudioTalks/i.test(value)) return 'talks';
-  if (/StudioNewsReports/i.test(value)) return 'news-reports';
-  if (/VODPgmEvtMorningWorship/i.test(value)) return 'morning-worship';
+function categoryFor(url: string, categoryKey?: string, id?: string): Category {
+  // First check URL path
+  if (/StudioMonthlyPrograms/i.test(url)) return 'broadcasting';
+  if (/StudioTalks/i.test(url)) return 'talks';
+  if (/StudioNewsReports/i.test(url)) return 'news-reports';
+  if (/VODPgmEvtMorningWorship/i.test(url)) return 'morning-worship';
+  
+  // Then check API categoryKey
+  if (categoryKey) {
+    if (/StudioMonthlyPrograms/i.test(categoryKey)) return 'broadcasting';
+    if (/StudioTalks/i.test(categoryKey)) return 'talks';
+    if (/StudioNewsReports/i.test(categoryKey)) return 'news-reports';
+    if (/VODPgmEvtMorningWorship/i.test(categoryKey)) return 'morning-worship';
+  }
+  
+  // Fallback: check video ID pattern
+  if (id) {
+    if (/^pub-jwb-\d+_/i.test(id)) return 'broadcasting';
+    if (/^pub-ivwc_/i.test(id)) return 'talks';
+    if (/^pub-jwbvod/i.test(id)) return 'news-reports';
+    if (/^docid-\d+_/i.test(id)) return 'news-reports';
+  }
+  
   return 'other';
 }
 function folderFor(category: Category): string { return category === 'broadcasting' ? 'Broadcasting' : category === 'talks' ? 'Talks' : category === 'news-reports' ? 'News Reports' : category === 'morning-worship' ? 'Morning Worship' : 'Other'; }
