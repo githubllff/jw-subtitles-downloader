@@ -37,9 +37,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
-  onunload() {
-    this.cancelling = true;
-  }
+  onunload() { this.cancelling = true; }
 
   private updateStatus(message: string) {
     if (this.statusBarEl) this.statusBarEl.setText(`JW Sync: ${message}`);
@@ -55,55 +53,43 @@ export default class JwSubtitlesPlugin extends Plugin {
   async reorganizeYears() {
     this.cancelling = false;
     const root = normalizePath(this.settings.rootFolder);
-    const files = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(`${root}/`));
-    
-    if (!files.length) {
-      new Notice('No JW Subtitles notes found');
-      return;
-    }
+    const files = this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${root}/`));
+    if (!files.length) { new Notice('No JW Subtitles notes found'); return; }
 
     this.updateStatus('Reorganizing by year...');
     let moved = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const file of files) {
       if (this.cancelling) break;
       try {
         const cache = this.app.metadataCache.getFileCache(file);
         const videoId = cache?.frontmatter?.jwVideoId;
-        const currentYear = cache?.frontmatter?.year;
         const title = cache?.frontmatter?.title as string | undefined;
-        
-        if (!videoId || !currentYear) {
-          skipped++;
-          continue;
-        }
+        const storedCategory = cache?.frontmatter?.type as Category | undefined;
+        const category = storedCategory || categoryFor('', '', videoId);
+        if (!videoId || !category) { skipped++; continue; }
 
-        const newYear = parseYear(videoId, undefined, title);
-        if (newYear === currentYear) {
-          skipped++;
-          continue;
-        }
+        const year = parseYear(videoId, undefined, title || file.basename);
+        const expectedFolder = normalizePath(`${root}/${folderFor(category)}/${year}`);
+        const expectedPath = normalizePath(`${expectedFolder}/${file.name}`);
+        if (file.path === expectedPath) { skipped++; continue; }
 
-        const category = cache?.frontmatter?.type as Category | undefined;
-        if (!category) {
-          skipped++;
-          continue;
-        }
-
-        const newFolder = normalizePath(`${root}/${folderFor(category)}/${newYear}`);
-        const newPath = normalizePath(`${newFolder}/${file.name}`);
-        
-        await this.app.vault.createFolder(newFolder).catch(() => undefined);
-        await this.app.vault.rename(file, newPath);
+        await this.app.vault.createFolder(expectedFolder).catch(() => undefined);
+        let content = await this.app.vault.read(file);
+        content = updateFrontmatterYear(content, year);
+        await this.app.vault.modify(file, content);
+        await this.app.vault.rename(file, expectedPath);
         moved++;
-        console.log(`Moved ${file.name} to year ${newYear}`);
+        console.log(`Moved ${file.path} to ${expectedPath}`);
       } catch (error) {
-        console.error(`Failed to reorganize ${file.name}:`, error);
+        failed++;
+        console.error(`Failed to reorganize ${file.path}:`, error);
       }
     }
 
-    const msg = `Reorganize complete: ${moved} moved, ${skipped} skipped`;
+    const msg = `Reorganize complete: ${moved} moved, ${skipped} already correct, ${failed} failed`;
     new Notice(msg);
     this.updateStatus('Done');
     setTimeout(() => this.updateStatus(''), 5000);
@@ -112,48 +98,42 @@ export default class JwSubtitlesPlugin extends Plugin {
   async recategorize() {
     this.cancelling = false;
     const root = normalizePath(this.settings.rootFolder);
-    const files = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(`${root}/`));
-    
-    if (!files.length) {
-      new Notice('No JW Subtitles notes found');
-      return;
-    }
+    const files = this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${root}/`));
+    if (!files.length) { new Notice('No JW Subtitles notes found'); return; }
 
     this.updateStatus('Recategorizing...');
     let moved = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const file of files) {
       if (this.cancelling) break;
       try {
         const cache = this.app.metadataCache.getFileCache(file);
         const videoId = cache?.frontmatter?.jwVideoId;
-        const currentCategory = cache?.frontmatter?.type as Category | undefined;
-        
-        if (!videoId || !currentCategory) {
-          skipped++;
-          continue;
-        }
+        const title = cache?.frontmatter?.title as string | undefined;
+        if (!videoId) { skipped++; continue; }
 
-        const newCategory = categoryFor('', '', videoId);
-        if (newCategory === currentCategory) {
-          skipped++;
-          continue;
-        }
+        const category = categoryFor('', '', videoId);
+        const year = parseYear(videoId, undefined, title || file.basename);
+        const expectedFolder = normalizePath(`${root}/${folderFor(category)}/${year}`);
+        const expectedPath = normalizePath(`${expectedFolder}/${file.name}`);
+        if (file.path === expectedPath) { skipped++; continue; }
 
-        const newFolder = normalizePath(`${root}/${folderFor(newCategory)}`);
-        const newPath = normalizePath(`${newFolder}/${file.name}`);
-        
-        await this.app.vault.createFolder(newFolder).catch(() => undefined);
-        await this.app.vault.rename(file, newPath);
+        await this.app.vault.createFolder(expectedFolder).catch(() => undefined);
+        let content = await this.app.vault.read(file);
+        content = updateFrontmatterCategoryAndYear(content, category, year);
+        await this.app.vault.modify(file, content);
+        await this.app.vault.rename(file, expectedPath);
         moved++;
-        console.log(`Moved ${file.name} to ${newCategory}`);
+        console.log(`Moved ${file.path} to ${expectedPath}`);
       } catch (error) {
-        console.error(`Failed to recategorize ${file.name}:`, error);
+        failed++;
+        console.error(`Failed to recategorize ${file.path}:`, error);
       }
     }
 
-    const msg = `Recategorize complete: ${moved} moved, ${skipped} skipped`;
+    const msg = `Recategorize complete: ${moved} moved, ${skipped} already correct, ${failed} failed`;
     new Notice(msg);
     this.updateStatus('Done');
     setTimeout(() => this.updateStatus(''), 5000);
@@ -162,22 +142,13 @@ export default class JwSubtitlesPlugin extends Plugin {
   async sync() {
     this.cancelling = false;
     const source = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md');
-    if (!(source instanceof TFile)) {
-      new Notice('Create JW Subtitle Sources.md with JW.ORG video URLs');
-      return;
-    }
+    if (!(source instanceof TFile)) { new Notice('Create JW Subtitle Sources.md with JW.ORG video URLs'); return; }
 
     this.updateStatus('Starting...');
     await this.log(source, '--- sync started ---');
     const text = (await this.app.vault.read(source)).split(/^## Sync log$/m, 1)[0];
     const links = sourceLinks(text);
-
-    if (!links.length) {
-      await this.log(source, 'No JW.ORG URLs found');
-      new Notice('No JW.ORG URLs found in JW Subtitle Sources.md');
-      this.updateStatus('No URLs found');
-      return;
-    }
+    if (!links.length) { await this.log(source, 'No JW.ORG URLs found'); new Notice('No JW.ORG URLs found in JW Subtitle Sources.md'); this.updateStatus('No URLs found'); return; }
 
     let discovered = 0;
     let downloaded = 0;
@@ -189,20 +160,11 @@ export default class JwSubtitlesPlugin extends Plugin {
       if (this.cancelling) break;
       try {
         const id = extractId(link.url);
-        if (!id || seen.has(id)) {
-          skipped++;
-          continue;
-        }
+        if (!id || seen.has(id)) { skipped++; continue; }
         seen.add(id);
         discovered++;
-
         const media = await this.fetchMedia(id, link);
-        if (!media) {
-          skipped++;
-          await this.log(source, `SKIP no VTT for ${id}`);
-          continue;
-        }
-
+        if (!media) { skipped++; await this.log(source, `SKIP no VTT for ${id}`); continue; }
         await this.write(media);
         downloaded++;
         await this.log(source, `OK wrote "${media.title}" (${media.category}, year=${media.year})`);
@@ -216,8 +178,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     }
 
     await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`);
-    const msg = `Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`;
-    new Notice(msg);
+    new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
     this.updateStatus(this.cancelling ? 'Cancelled' : 'Done');
     setTimeout(() => this.updateStatus(''), 5000);
   }
@@ -230,10 +191,8 @@ export default class JwSubtitlesPlugin extends Plugin {
       const files = item.files || data.files || [];
       const candidates = files.flatMap((file: any) => [file.subtitles?.url, file.textTracks?.find((track: any) => track.src)?.src, file.tracks?.find((track: any) => track.src)?.src].filter(Boolean));
       if (!candidates.length) return null;
-
       const vtt = (await requestUrl({ url: candidates[0], throw: false })).text;
       if (!vtt) return null;
-
       const rawTitle = decodeHtml(item.title || link.title || id).trim();
       const category = categoryFor(link.url, item.categoryKey, id);
       const { title, speaker } = parseTitleAndSpeaker(rawTitle, category, id);
@@ -245,14 +204,12 @@ export default class JwSubtitlesPlugin extends Plugin {
   }
 
   async write(item: MediaDetails) {
-    const folderName = folderFor(item.category);
     const root = normalizePath(this.settings.rootFolder);
-    const categoryDir = normalizePath(`${root}/${folderName}`);
+    const categoryDir = normalizePath(`${root}/${folderFor(item.category)}`);
     const yearDir = normalizePath(`${categoryDir}/${item.year}`);
     await this.app.vault.createFolder(root).catch(() => undefined);
     await this.app.vault.createFolder(categoryDir).catch(() => undefined);
     await this.app.vault.createFolder(yearDir).catch(() => undefined);
-
     const filename = `${safe(item.title)}${item.speaker ? ` - ${safe(item.speaker)}` : ''} - ${shortId(item.id)}.md`;
     const path = normalizePath(`${yearDir}/${filename}`);
     const transcript = vttToParagraphs(item.vtt);
@@ -270,9 +227,7 @@ class SettingsTab extends PluginSettingTab {
     this.containerEl.empty();
     new Setting(this.containerEl).setName('Root folder').setDesc('Where to store downloaded transcripts').addText(text => text.setValue(this.plugin.settings.rootFolder).onChange(async value => { this.plugin.settings.rootFolder = value || DEFAULT_SETTINGS.rootFolder; await this.save(); }));
     new Setting(this.containerEl).setName('Language code').setDesc('Subtitle language (E for English)').addText(text => text.setValue(this.plugin.settings.language).onChange(async value => { this.plugin.settings.language = value.toUpperCase(); await this.save(); }));
-    if (Platform.isMobile) {
-      new Setting(this.containerEl).setName('Mobile optimized').setDesc('Slower sync to save battery and data').addToggle(toggle => toggle.setValue(this.plugin.settings.mobileOptimized).onChange(async value => { this.plugin.settings.mobileOptimized = value; this.plugin.settings.requestDelayMs = value ? 1500 : 750; await this.save(); }));
-    }
+    if (Platform.isMobile) new Setting(this.containerEl).setName('Mobile optimized').setDesc('Slower sync to save battery and data').addToggle(toggle => toggle.setValue(this.plugin.settings.mobileOptimized).onChange(async value => { this.plugin.settings.mobileOptimized = value; this.plugin.settings.requestDelayMs = value ? 1500 : 750; await this.save(); }));
     new Setting(this.containerEl).setName('Output format').addDropdown(dropdown => dropdown.addOption('vtt', 'Raw VTT').addOption('plain', 'Formatted transcript').addOption('both', 'Raw VTT and formatted transcript').setValue(this.plugin.settings.outputMode).onChange(async value => { this.plugin.settings.outputMode = value as OutputMode; await this.save(); }));
   }
 }
@@ -282,103 +237,64 @@ function sourceLinks(text: string): SourceLink[] {
   for (const line of text.split(/\r?\n/)) {
     const markdown = line.match(/\[([^\]]+)\]\((https?:\/\/www\.jw\.org\/[^)]+)\)/i);
     if (markdown) links.push({ title: decodeHtml(markdown[1]).replace(/\s+/g, ' ').trim(), url: markdown[2] });
-    else {
-      const raw = line.match(/https?:\/\/www\.jw\.org\/[^\s)]+/i);
-      if (raw) links.push({ url: raw[0] });
-    }
+    else { const raw = line.match(/https?:\/\/www\.jw\.org\/[^\s)]+/i); if (raw) links.push({ url: raw[0] }); }
   }
   return links;
 }
-
 function extractIds(value: string): string[] {
   const ids = new Set<string>();
-  for (const match of value.matchAll(/(?:pub-[a-z0-9_-]+|docid-\d+)_\d+_VIDEO/gi)) {
-    ids.add(match[0]);
-  }
+  for (const match of value.matchAll(/(?:pub-[a-z0-9_-]+|docid-\d+)_\d+_VIDEO/gi)) ids.add(match[0]);
   return [...ids];
 }
-
 function extractId(value: string): string | null { return extractIds(value)[0] || null; }
 function directVideoUrl(id: string): string { return `https://www.jw.org/en/library/videos/?appLanguage=E&item=${encodeURIComponent(id)}`; }
 function categoryFor(url: string, categoryKey?: string, id?: string): Category {
-  if (/StudioMonthlyPrograms/i.test(url)) return 'broadcasting';
-  if (/StudioTalks/i.test(url)) return 'talks';
-  if (/StudioNewsReports/i.test(url)) return 'news-reports';
-  if (/VODPgmEvtMorningWorship/i.test(url)) return 'morning-worship';
-  
-  if (categoryKey) {
-    if (/StudioMonthlyPrograms/i.test(categoryKey)) return 'broadcasting';
-    if (/StudioTalks/i.test(categoryKey)) return 'talks';
-    if (/StudioNewsReports/i.test(categoryKey)) return 'news-reports';
-    if (/VODPgmEvtMorningWorship/i.test(categoryKey)) return 'morning-worship';
-  }
-  
-  if (id) {
-    if (/^pub-jwb-\d+_/i.test(id)) return 'broadcasting';
-    if (/^pub-ivwc_/i.test(id)) return 'talks';
-    if (/^pub-jwbvod/i.test(id)) return 'news-reports';
-    if (/^docid-\d+_/i.test(id)) return 'news-reports';
-  }
-  
+  if (/StudioMonthlyPrograms/i.test(url) || /StudioMonthlyPrograms/i.test(categoryKey || '')) return 'broadcasting';
+  if (/StudioTalks/i.test(url) || /StudioTalks/i.test(categoryKey || '')) return 'talks';
+  if (/StudioNewsReports/i.test(url) || /StudioNewsReports/i.test(categoryKey || '')) return 'news-reports';
+  if (/VODPgmEvtMorningWorship/i.test(url) || /VODPgmEvtMorningWorship/i.test(categoryKey || '')) return 'morning-worship';
+  if (/^pub-jwb-\d+_/i.test(id || '')) return 'broadcasting';
+  if (/^pub-ivwc_/i.test(id || '')) return 'talks';
+  if (/^pub-jwbvod/i.test(id || '') || /^docid-\d+_/i.test(id || '')) return 'news-reports';
   return 'other';
 }
 function folderFor(category: Category): string { return category === 'broadcasting' ? 'Broadcasting' : category === 'talks' ? 'Talks' : category === 'news-reports' ? 'News Reports' : category === 'morning-worship' ? 'Morning Worship' : 'Other'; }
 function parseYear(id: string, firstPublished?: string, title?: string): number {
-  if (firstPublished) {
-    const year = new Date(firstPublished).getFullYear();
-    if (!Number.isNaN(year) && year > 1990) return year;
-  }
-  if (title) {
-    const titleYear = title.match(/\b(20\d{2}|19\d{2})\b/);
-    if (titleYear) return Number(titleYear[1]);
-  }
-  const legacy = id.match(/^pub-jwb_(\d{4})/i);
-  if (legacy) return Number(legacy[1]);
+  if (firstPublished) { const year = new Date(firstPublished).getFullYear(); if (!Number.isNaN(year) && year > 1990) return year; }
+  const match = title?.match(/\b(20\d{2}|19\d{2})\b/); if (match) return Number(match[1]);
+  const legacy = id.match(/^pub-jwb_(\d{4})/i); if (legacy) return Number(legacy[1]);
   return new Date().getFullYear();
 }
+function updateFrontmatterYear(content: string, year: number): string {
+  if (!content.startsWith('---\n')) return content;
+  return /^year:\s*.*$/m.test(content) ? content.replace(/^year:\s*.*$/m, `year: ${year}`) : content.replace(/^---\n/, `---\nyear: ${year}\n`);
+}
+function updateFrontmatterCategoryAndYear(content: string, category: Category, year: number): string {
+  content = updateFrontmatterYear(content, year);
+  if (!content.startsWith('---\n')) return content;
+  return /^type:\s*.*$/m.test(content) ? content.replace(/^type:\s*.*$/m, `type: ${category}`) : content.replace(/^---\n/, `---\ntype: ${category}\n`);
+}
 function parseTitleAndSpeaker(rawTitle: string, category: Category, id: string): { title: string; speaker?: string } {
-  let clean = rawTitle.replace(/\s+-\s+Library(?:\s+-\s+JW\.ORG)?$/i, '').replace(/\s+-\s+JW\.ORG(?:\s+Videos)?(?:\s+English)?$/i, '').replace(/\s+/g, ' ').trim();
+  const clean = rawTitle.replace(/\s+-\s+Library(?:\s+-\s+JW\.ORG)?$/i, '').replace(/\s+-\s+JW\.ORG(?:\s+Videos)?(?:\s+English)?$/i, '').replace(/\s+/g, ' ').trim();
   if (category === 'broadcasting') return { title: clean.replace(/^JW Broadcasting\s*[—-]\s*/i, '').trim() || id };
-  const match = clean.match(/^([A-Z][A-Za-zÀ·Ö·Ø·ö·°·ÿ'\-.\s]+?):\s*(.+)$/);
+  const match = clean.match(/^([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-.\s]+?):\s*(.+)$/);
   return match ? { speaker: match[1].trim(), title: match[2].trim() } : { title: clean || id };
 }
 function shortId(id: string): string { return id.replace(/^(?:pub|docid)-/, '').replace(/_VIDEO$/i, ''); }
 
 interface Cue { start: number; end: number; text: string; speaker: boolean; }
 function vttToParagraphs(vtt: string): string {
-  const cues = parseVtt(vtt);
-  const paragraphs: string[] = [];
-  let current = '';
-  let sentenceCount = 0;
-  let previous: Cue | null = null;
+  const cues = parseVtt(vtt); const paragraphs: string[] = []; let current = ''; let sentenceCount = 0; let previous: Cue | null = null;
   const flush = () => { const value = current.replace(/\s+/g, ' ').trim(); if (value) paragraphs.push(value); current = ''; sentenceCount = 0; };
-  for (const cue of cues) {
-    const pause = previous ? cue.start - previous.end : 0;
-    const transition = cue.speaker || pause >= 2.5;
-    const addition = cue.text;
-    current = current ? `${current} ${addition}` : addition;
-    if (/[.!?][""']?$/.test(addition)) sentenceCount++;
-    const completedThought = /[.!?][""']?$/.test(addition);
-    if (completedThought && (transition || sentenceCount >= 4 || current.length >= 700)) flush();
-    previous = cue;
-  }
-  flush();
-  return paragraphs.join('\n\n');
+  for (const cue of cues) { const pause = previous ? cue.start - previous.end : 0; const transition = cue.speaker || pause >= 2.5; current = current ? `${current} ${cue.text}` : cue.text; if (/[.!?][”"']?$/.test(cue.text)) sentenceCount++; if (/[.!?][”"']?$/.test(cue.text) && (transition || sentenceCount >= 4 || current.length >= 700)) flush(); previous = cue; }
+  flush(); return paragraphs.join('\n\n');
 }
 function parseVtt(vtt: string): Cue[] {
   const cues: Cue[] = [];
-  for (const block of vtt.replace(/^WEBVTT[^\n]*\n?/i, '').split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const index = lines.findIndex(line => line.includes('-->'));
-    if (index < 0) continue;
-    const [from, to] = lines[index].split('-->');
-    const text = decodeHtml(lines.slice(index + 1).join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
-    if (!text) continue;
-    cues.push({ start: toSeconds(from), end: toSeconds(to.split(/\s+/)[0]), text, speaker: /^(?:[-–—]\s+|>>\s*)/.test(text) });
-  }
+  for (const block of vtt.replace(/^WEBVTT[^\n]*\n?/i, '').split(/\r?\n\r?\n/)) { const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean); const index = lines.findIndex(line => line.includes('-->')); if (index < 0) continue; const [from, to] = lines[index].split('-->'); const text = decodeHtml(lines.slice(index + 1).join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); if (text) cues.push({ start: toSeconds(from), end: toSeconds(to.split(/\s+/)[0]), text, speaker: /^(?:[-–—]\s+|>>\s*)/.test(text) }); }
   return cues;
 }
 function toSeconds(value: string): number { const parts = value.trim().replace(',', '.').split(':'); const seconds = Number(parts.pop() || 0); const minutes = Number(parts.pop() || 0); const hours = Number(parts.pop() || 0); return hours * 3600 + minutes * 60 + seconds; }
 function decodeHtml(value: string): string { const element = document.createElement('textarea'); element.innerHTML = value; return element.value; }
 function safe(value: string): string { return value.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 180); }
-function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
+function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms); }
