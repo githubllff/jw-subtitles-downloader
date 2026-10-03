@@ -266,9 +266,23 @@ function categoryFor(url: string, categoryKey?: string, id?: string): Category {
 }
 function folderFor(category: Category): string { return category === 'broadcasting' ? 'Broadcasting' : category === 'talks' ? 'Talks' : category === 'news-reports' ? 'News Reports' : category === 'morning-worship' ? 'Morning Worship' : 'Other'; }
 function parseYear(id: string, firstPublished?: string, title?: string): number {
-  if (firstPublished) { const year = new Date(firstPublished).getFullYear(); if (!Number.isNaN(year) && year > 1990) return year; }
-  const titleYear = title?.match(/\b(?:19|20)\d{2}\b/); if (titleYear) return Number(titleYear[0]);
-  const legacy = id.match(/^pub-jwb_(\d{4})/i); if (legacy) return Number(legacy[1]);
+  // Try API firstPublished date
+  if (firstPublished) {
+    const year = new Date(firstPublished).getFullYear();
+    if (!Number.isNaN(year) && year > 1990) return year;
+  }
+  
+  // Try to extract year from title (e.g., "JW Broadcasting—September 2026")
+  if (title) {
+    const titleYear = title.match(/\b(20\d{2}|19\d{2})\b/);
+    if (titleYear) return Number(titleYear[1]);
+  }
+  
+  // Try legacy ID format (pub-jwb_202609_1_VIDEO)
+  const legacy = id.match(/^pub-jwb_(\d{4})/i);
+  if (legacy) return Number(legacy[1]);
+  
+  // Fallback to current year
   return new Date().getFullYear();
 }
 function parseTitleAndSpeaker(rawTitle: string, category: Category, id: string): { title: string; speaker?: string } {
