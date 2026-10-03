@@ -7,7 +7,7 @@ interface Settings { rootFolder: string; language: string; requestDelayMs: numbe
 const DEFAULT_SETTINGS: Settings = { rootFolder: 'JW Subtitles', language: 'E', requestDelayMs: Platform.isMobile ? 1500 : 750, outputMode: 'both', mobileOptimized: true };
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
 interface SourceLink { url: string; title?: string; }
-interface ExistingNote { id: string; title: string; category: Category; year: number; content: string; }
+interface ExistingNote { id: string; title: string; content: string; }
 
 export default class JwSubtitlesPlugin extends Plugin {
   settings!: Settings;
@@ -20,7 +20,6 @@ export default class JwSubtitlesPlugin extends Plugin {
     this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() });
     this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; this.updateStatus('Cancelled'); } });
     this.addCommand({ id: 'recategorize', name: 'Recategorize existing notes', callback: () => this.reorganizeExistingNotes() });
-    this.addCommand({ id: 'reorganize-years', name: 'Reorganize notes by year', callback: () => this.reorganizeExistingNotes() });
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
@@ -33,10 +32,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     const root = normalizePath(this.settings.rootFolder);
     const files = this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${root}/`));
     if (!files.length) { new Notice('No JW Subtitles notes found'); return; }
-
-    let moved = 0;
-    let skipped = 0;
-    let failed = 0;
+    let moved = 0, skipped = 0, failed = 0;
     this.updateStatus(`Reorganizing 0/${files.length}`);
 
     for (let index = 0; index < files.length; index++) {
@@ -47,57 +43,40 @@ export default class JwSubtitlesPlugin extends Plugin {
         const content = await this.app.vault.read(file);
         const note = parseExistingNote(content, file.basename);
         if (!note) { skipped++; continue; }
-
         const category = categoryFor('', '', note.id);
         const year = parseYear(note.id, undefined, note.title || file.basename);
         const expectedFolder = normalizePath(`${root}/${folderFor(category)}/${year}`);
         const expectedPath = normalizePath(`${expectedFolder}/${file.name}`);
         const updatedContent = updateFrontmatter(note.content, category, year);
-
         if (file.path === expectedPath) {
           if (updatedContent !== content) await this.app.vault.modify(file, updatedContent);
-          skipped++;
-          continue;
+          skipped++; continue;
         }
-
         await this.app.vault.createFolder(expectedFolder).catch(() => undefined);
         await this.app.vault.modify(file, updatedContent);
         const collision = this.app.vault.getAbstractFileByPath(expectedPath);
-        if (collision && collision !== file) {
-          failed++;
-          console.error(`Cannot move ${file.path}; destination already exists: ${expectedPath}`);
-          continue;
-        }
+        if (collision && collision !== file) { failed++; console.error(`Destination already exists: ${expectedPath}`); continue; }
         await this.app.vault.rename(file, expectedPath);
         moved++;
-      } catch (error) {
-        failed++;
-        console.error(`Failed to reorganize ${file.path}:`, error);
-      }
+      } catch (error) { failed++; console.error(`Failed to reorganize ${file.path}:`, error); }
     }
-
-    const message = `Reorganize complete: ${moved} moved, ${skipped} already correct, ${failed} failed`;
-    new Notice(message);
-    this.updateStatus('Done');
-    setTimeout(() => this.updateStatus(''), 5000);
+    new Notice(`Recategorize complete: ${moved} moved, ${skipped} already correct, ${failed} failed`);
+    this.updateStatus('Done'); setTimeout(() => this.updateStatus(''), 5000);
   }
 
   async sync() {
     this.cancelling = false;
     const source = this.app.vault.getAbstractFileByPath('JW Subtitle Sources.md');
     if (!(source instanceof TFile)) { new Notice('Create JW Subtitle Sources.md with JW.ORG video URLs'); return; }
-    this.updateStatus('Starting...');
-    await this.log(source, '--- sync started ---');
+    this.updateStatus('Starting...'); await this.log(source, '--- sync started ---');
     const text = (await this.app.vault.read(source)).split(/^## Sync log$/m, 1)[0];
     const links = sourceLinks(text);
     if (!links.length) { await this.log(source, 'No JW.ORG URLs found'); new Notice('No JW.ORG URLs found in JW Subtitle Sources.md'); this.updateStatus('No URLs found'); return; }
-
     let discovered = 0, downloaded = 0, skipped = 0, failed = 0;
     const seen = new Set<string>();
     for (let index = 0; index < links.length; index++) {
       if (this.cancelling) break;
-      const link = links[index];
-      this.updateStatus(`${index + 1}/${links.length}`);
+      const link = links[index]; this.updateStatus(`${index + 1}/${links.length}`);
       try {
         const id = extractId(link.url);
         if (!id || seen.has(id)) { skipped++; continue; }
@@ -107,9 +86,7 @@ export default class JwSubtitlesPlugin extends Plugin {
         await this.write(media); downloaded++;
         await this.log(source, `OK wrote "${media.title}" (${media.category}, year=${media.year})`);
         await sleep(this.settings.requestDelayMs);
-      } catch (error) {
-        failed++; const message = error instanceof Error ? error.message : String(error); await this.log(source, `ERROR ${message}`); console.error('JW Sync error:', error);
-      }
+      } catch (error) { failed++; const message = error instanceof Error ? error.message : String(error); await this.log(source, `ERROR ${message}`); console.error('JW Sync error:', error); }
     }
     await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`);
     new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
@@ -166,13 +143,11 @@ function parseExistingNote(content: string, fallbackTitle: string): ExistingNote
   const id = content.match(/^jwVideoId:\s*["']?([^\n"']+)["']?\s*$/m)?.[1]?.trim();
   if (!id) return null;
   const titleRaw = content.match(/^title:\s*(.+)$/m)?.[1]?.trim() || fallbackTitle;
-  const title = titleRaw.replace(/^['"]|['"]$/g, '');
-  return { id, title, category: 'other', year: new Date().getFullYear(), content };
+  return { id, title: titleRaw.replace(/^['"]|['"]$/g, ''), content };
 }
 function updateFrontmatter(content: string, category: Category, year: number): string {
   if (!content.startsWith('---\n')) return content;
   const set = (key: string, value: string) => new RegExp(`^${key}:\\s*.*$`, 'm').test(content) ? content.replace(new RegExp(`^${key}:\\s*.*$`, 'm'), `${key}: ${value}`) : content.replace(/^---\n/, `---\n${key}: ${value}\n`);
-  content = set('type', category);
   return set('year', String(year));
 }
 function sourceLinks(text: string): SourceLink[] {
