@@ -33,6 +33,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() });
     this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; this.updateStatus('Cancelled'); } });
     this.addCommand({ id: 'recategorize', name: 'Recategorize existing notes', callback: () => this.recategorize() });
+    this.addCommand({ id: 'reorganize-years', name: 'Reorganize notes by year', callback: () => this.reorganizeYears() });
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
@@ -49,6 +50,63 @@ export default class JwSubtitlesPlugin extends Plugin {
     if (!text.includes('## Sync log')) text += '\n\n## Sync log\n';
     text += `- ${new Date().toISOString()} ${message}\n`;
     await this.app.vault.modify(source, text);
+  }
+
+  async reorganizeYears() {
+    this.cancelling = false;
+    const root = normalizePath(this.settings.rootFolder);
+    const files = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(`${root}/`));
+    
+    if (!files.length) {
+      new Notice('No JW Subtitles notes found');
+      return;
+    }
+
+    this.updateStatus('Reorganizing by year...');
+    let moved = 0;
+    let skipped = 0;
+
+    for (const file of files) {
+      if (this.cancelling) break;
+      try {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const videoId = cache?.frontmatter?.jwVideoId;
+        const currentYear = cache?.frontmatter?.year;
+        const title = cache?.frontmatter?.title as string | undefined;
+        
+        if (!videoId || !currentYear) {
+          skipped++;
+          continue;
+        }
+
+        const newYear = parseYear(videoId, undefined, title);
+        if (newYear === currentYear) {
+          skipped++;
+          continue;
+        }
+
+        const category = cache?.frontmatter?.type as Category | undefined;
+        if (!category) {
+          skipped++;
+          continue;
+        }
+
+        const newFolder = normalizePath(`${root}/${folderFor(category)}/${newYear}`);
+        const newPath = normalizePath(`${newFolder}/${file.name}`);
+        
+        await this.app.vault.createFolder(newFolder).catch(() => undefined);
+        await this.app.vault.rename(file, newPath);
+        moved++;
+        console.log(`Moved ${file.name} to year ${newYear}`);
+      } catch (error) {
+        console.error(`Failed to reorganize ${file.name}:`, error);
+      }
+    }
+
+    const msg = `Reorganize complete: ${moved} moved, ${skipped} skipped`;
+    new Notice(msg);
+    this.updateStatus('Done');
+    setTimeout(() => this.updateStatus(''), 5000);
   }
 
   async recategorize() {
@@ -266,23 +324,16 @@ function categoryFor(url: string, categoryKey?: string, id?: string): Category {
 }
 function folderFor(category: Category): string { return category === 'broadcasting' ? 'Broadcasting' : category === 'talks' ? 'Talks' : category === 'news-reports' ? 'News Reports' : category === 'morning-worship' ? 'Morning Worship' : 'Other'; }
 function parseYear(id: string, firstPublished?: string, title?: string): number {
-  // Try API firstPublished date
   if (firstPublished) {
     const year = new Date(firstPublished).getFullYear();
     if (!Number.isNaN(year) && year > 1990) return year;
   }
-  
-  // Try to extract year from title (e.g., "JW Broadcasting—September 2026")
   if (title) {
     const titleYear = title.match(/\b(20\d{2}|19\d{2})\b/);
     if (titleYear) return Number(titleYear[1]);
   }
-  
-  // Try legacy ID format (pub-jwb_202609_1_VIDEO)
   const legacy = id.match(/^pub-jwb_(\d{4})/i);
   if (legacy) return Number(legacy[1]);
-  
-  // Fallback to current year
   return new Date().getFullYear();
 }
 function parseTitleAndSpeaker(rawTitle: string, category: Category, id: string): { title: string; speaker?: string } {
