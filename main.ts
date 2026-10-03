@@ -183,6 +183,7 @@ function sourceLinks(text: string): SourceLink[] {
 
 function extractIds(value: string): string[] {
   const ids = new Set<string>();
+  // Match complete video IDs: pub-xxx_N_VIDEO or docid-xxx_N_VIDEO
   for (const match of value.matchAll(/(?:pub-[a-z0-9_-]+|docid-\d+)_\d+_VIDEO/gi)) {
     ids.add(match[0]);
   }
