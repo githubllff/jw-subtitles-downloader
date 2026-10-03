@@ -32,6 +32,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     this.statusBarEl = this.addStatusBarItem();
     this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() });
     this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; this.updateStatus('Cancelled'); } });
+    this.addCommand({ id: 'recategorize', name: 'Recategorize existing notes', callback: () => this.recategorize() });
     this.addSettingTab(new SettingsTab(this.app, this));
   }
 
@@ -48,6 +49,56 @@ export default class JwSubtitlesPlugin extends Plugin {
     if (!text.includes('## Sync log')) text += '\n\n## Sync log\n';
     text += `- ${new Date().toISOString()} ${message}\n`;
     await this.app.vault.modify(source, text);
+  }
+
+  async recategorize() {
+    this.cancelling = false;
+    const root = normalizePath(this.settings.rootFolder);
+    const files = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith(`${root}/`));
+    
+    if (!files.length) {
+      new Notice('No JW Subtitles notes found');
+      return;
+    }
+
+    this.updateStatus('Recategorizing...');
+    let moved = 0;
+    let skipped = 0;
+
+    for (const file of files) {
+      if (this.cancelling) break;
+      try {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const videoId = cache?.frontmatter?.jwVideoId;
+        const currentCategory = cache?.frontmatter?.type as Category | undefined;
+        
+        if (!videoId || !currentCategory) {
+          skipped++;
+          continue;
+        }
+
+        const newCategory = categoryFor('', '', videoId);
+        if (newCategory === currentCategory) {
+          skipped++;
+          continue;
+        }
+
+        const newFolder = normalizePath(`${root}/${folderFor(newCategory)}`);
+        const newPath = normalizePath(`${newFolder}/${file.name}`);
+        
+        await this.app.vault.createFolder(newFolder).catch(() => undefined);
+        await this.app.vault.rename(file, newPath);
+        moved++;
+        console.log(`Moved ${file.name} to ${newCategory}`);
+      } catch (error) {
+        console.error(`Failed to recategorize ${file.name}:`, error);
+      }
+    }
+
+    const msg = `Recategorize complete: ${moved} moved, ${skipped} skipped`;
+    new Notice(msg);
+    this.updateStatus('Done');
+    setTimeout(() => this.updateStatus(''), 5000);
   }
 
   async sync() {
@@ -192,13 +243,11 @@ function extractIds(value: string): string[] {
 function extractId(value: string): string | null { return extractIds(value)[0] || null; }
 function directVideoUrl(id: string): string { return `https://www.jw.org/en/library/videos/?appLanguage=E&item=${encodeURIComponent(id)}`; }
 function categoryFor(url: string, categoryKey?: string, id?: string): Category {
-  // First check URL path
   if (/StudioMonthlyPrograms/i.test(url)) return 'broadcasting';
   if (/StudioTalks/i.test(url)) return 'talks';
   if (/StudioNewsReports/i.test(url)) return 'news-reports';
   if (/VODPgmEvtMorningWorship/i.test(url)) return 'morning-worship';
   
-  // Then check API categoryKey
   if (categoryKey) {
     if (/StudioMonthlyPrograms/i.test(categoryKey)) return 'broadcasting';
     if (/StudioTalks/i.test(categoryKey)) return 'talks';
@@ -206,7 +255,6 @@ function categoryFor(url: string, categoryKey?: string, id?: string): Category {
     if (/VODPgmEvtMorningWorship/i.test(categoryKey)) return 'morning-worship';
   }
   
-  // Fallback: check video ID pattern
   if (id) {
     if (/^pub-jwb-\d+_/i.test(id)) return 'broadcasting';
     if (/^pub-ivwc_/i.test(id)) return 'talks';
