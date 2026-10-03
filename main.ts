@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl, Platform } from 'obsidian';
 
 type OutputMode = 'vtt' | 'plain' | 'both';
 type Category = 'broadcasting' | 'talks' | 'news-reports' | 'morning-worship' | 'other';
@@ -8,13 +8,15 @@ interface Settings {
   language: string;
   requestDelayMs: number;
   outputMode: OutputMode;
+  mobileOptimized: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
   rootFolder: 'JW Subtitles',
   language: 'E',
-  requestDelayMs: 750,
-  outputMode: 'both'
+  requestDelayMs: Platform.isMobile ? 1500 : 750,
+  outputMode: 'both',
+  mobileOptimized: true
 };
 
 interface MediaDetails { id: string; title: string; speaker?: string; year: number; category: Category; pageUrl: string; vtt: string; }
@@ -23,12 +25,22 @@ interface SourceLink { url: string; title?: string; }
 export default class JwSubtitlesPlugin extends Plugin {
   settings!: Settings;
   cancelling = false;
+  statusBarEl: HTMLElement | null = null;
 
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.statusBarEl = this.addStatusBarItem();
     this.addCommand({ id: 'sync', name: 'Sync JW subtitles', callback: () => this.sync() });
-    this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; } });
+    this.addCommand({ id: 'cancel', name: 'Cancel JW subtitle sync', callback: () => { this.cancelling = true; this.updateStatus('Cancelled'); } });
     this.addSettingTab(new SettingsTab(this.app, this));
+  }
+
+  onunload() {
+    this.cancelling = true;
+  }
+
+  private updateStatus(message: string) {
+    if (this.statusBarEl) this.statusBarEl.setText(`JW Sync: ${message}`);
   }
 
   private async log(source: TFile, message: string) {
@@ -46,6 +58,7 @@ export default class JwSubtitlesPlugin extends Plugin {
       return;
     }
 
+    this.updateStatus('Starting...');
     await this.log(source, '--- sync started ---');
     const text = (await this.app.vault.read(source)).split(/^## Sync log$/m, 1)[0];
     const links = sourceLinks(text);
@@ -53,6 +66,7 @@ export default class JwSubtitlesPlugin extends Plugin {
     if (!links.length) {
       await this.log(source, 'No JW.ORG URLs found');
       new Notice('No JW.ORG URLs found in JW Subtitle Sources.md');
+      this.updateStatus('No URLs found');
       return;
     }
 
@@ -61,9 +75,13 @@ export default class JwSubtitlesPlugin extends Plugin {
     let skipped = 0;
     let failed = 0;
     const seen = new Set<string>();
+    const total = links.length;
 
-    for (const link of links) {
+    for (let i = 0; i < links.length; i++) {
       if (this.cancelling) break;
+      const link = links[i];
+      this.updateStatus(`${i + 1}/${total}`);
+      
       try {
         const id = extractId(link.url);
         if (!id || seen.has(id)) {
@@ -86,29 +104,39 @@ export default class JwSubtitlesPlugin extends Plugin {
         await sleep(this.settings.requestDelayMs);
       } catch (error) {
         failed++;
-        await this.log(source, `ERROR ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        await this.log(source, `ERROR ${message}`);
+        console.error('JW Sync error:', error);
       }
     }
 
     await this.log(source, `--- sync finished downloaded=${downloaded} discovered=${discovered} skipped=${skipped} failed=${failed} ---`);
-    new Notice(`Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`);
+    const msg = `Sync complete: ${downloaded} notes; ${discovered} discovered, ${skipped} skipped, ${failed} failed`;
+    new Notice(msg);
+    this.updateStatus(this.cancelling ? 'Cancelled' : 'Done');
+    setTimeout(() => this.updateStatus(''), 5000);
   }
 
   async fetchMedia(id: string, link: SourceLink): Promise<MediaDetails | null> {
-    const api = `https://b.jw-cdn.org/apis/mediator/v1/media-items/${encodeURIComponent(this.settings.language)}/${encodeURIComponent(id)}?clientType=www`;
-    const data = (await requestUrl({ url: api })).json;
-    const item = Array.isArray(data.media) ? data.media[0] || {} : {};
-    const files = item.files || data.files || [];
-    const candidates = files.flatMap((file: any) => [file.subtitles?.url, file.textTracks?.find((track: any) => track.src)?.src, file.tracks?.find((track: any) => track.src)?.src].filter(Boolean));
-    if (!candidates.length) return null;
+    try {
+      const api = `https://b.jw-cdn.org/apis/mediator/v1/media-items/${encodeURIComponent(this.settings.language)}/${encodeURIComponent(id)}?clientType=www`;
+      const data = (await requestUrl({ url: api, throw: false })).json;
+      const item = Array.isArray(data.media) ? data.media[0] || {} : {};
+      const files = item.files || data.files || [];
+      const candidates = files.flatMap((file: any) => [file.subtitles?.url, file.textTracks?.find((track: any) => track.src)?.src, file.tracks?.find((track: any) => track.src)?.src].filter(Boolean));
+      if (!candidates.length) return null;
 
-    const vtt = (await requestUrl({ url: candidates[0] })).text;
-    if (!vtt) return null;
+      const vtt = (await requestUrl({ url: candidates[0], throw: false })).text;
+      if (!vtt) return null;
 
-    const rawTitle = decodeHtml(item.title || link.title || id).trim();
-    const category = categoryFor(link.url, item.categoryKey);
-    const { title, speaker } = parseTitleAndSpeaker(rawTitle, category, id);
-    return { id, title, speaker, year: parseYear(id, item.firstPublished, rawTitle), category, pageUrl: directVideoUrl(id), vtt };
+      const rawTitle = decodeHtml(item.title || link.title || id).trim();
+      const category = categoryFor(link.url, item.categoryKey);
+      const { title, speaker } = parseTitleAndSpeaker(rawTitle, category, id);
+      return { id, title, speaker, year: parseYear(id, item.firstPublished, rawTitle), category, pageUrl: directVideoUrl(id), vtt };
+    } catch (error) {
+      console.error(`Failed to fetch ${id}:`, error);
+      return null;
+    }
   }
 
   async write(item: MediaDetails) {
@@ -135,8 +163,11 @@ class SettingsTab extends PluginSettingTab {
   private async save() { await this.plugin.saveData(this.plugin.settings); }
   display() {
     this.containerEl.empty();
-    new Setting(this.containerEl).setName('Root folder').addText(text => text.setValue(this.plugin.settings.rootFolder).onChange(async value => { this.plugin.settings.rootFolder = value || DEFAULT_SETTINGS.rootFolder; await this.save(); }));
-    new Setting(this.containerEl).setName('Language code').addText(text => text.setValue(this.plugin.settings.language).onChange(async value => { this.plugin.settings.language = value.toUpperCase(); await this.save(); }));
+    new Setting(this.containerEl).setName('Root folder').setDesc('Where to store downloaded transcripts').addText(text => text.setValue(this.plugin.settings.rootFolder).onChange(async value => { this.plugin.settings.rootFolder = value || DEFAULT_SETTINGS.rootFolder; await this.save(); }));
+    new Setting(this.containerEl).setName('Language code').setDesc('Subtitle language (E for English)').addText(text => text.setValue(this.plugin.settings.language).onChange(async value => { this.plugin.settings.language = value.toUpperCase(); await this.save(); }));
+    if (Platform.isMobile) {
+      new Setting(this.containerEl).setName('Mobile optimized').setDesc('Slower sync to save battery and data').addToggle(toggle => toggle.setValue(this.plugin.settings.mobileOptimized).onChange(async value => { this.plugin.settings.mobileOptimized = value; this.plugin.settings.requestDelayMs = value ? 1500 : 750; await this.save(); }));
+    }
     new Setting(this.containerEl).setName('Output format').addDropdown(dropdown => dropdown.addOption('vtt', 'Raw VTT').addOption('plain', 'Formatted transcript').addOption('both', 'Raw VTT and formatted transcript').setValue(this.plugin.settings.outputMode).onChange(async value => { this.plugin.settings.outputMode = value as OutputMode; await this.save(); }));
   }
 }
@@ -200,8 +231,8 @@ function vttToParagraphs(vtt: string): string {
     const transition = cue.speaker || pause >= 2.5;
     const addition = cue.text;
     current = current ? `${current} ${addition}` : addition;
-    if (/[.!?][”"']?$/.test(addition)) sentenceCount++;
-    const completedThought = /[.!?][”"']?$/.test(addition);
+    if (/[.!?][""']?$/.test(addition)) sentenceCount++;
+    const completedThought = /[.!?][""']?$/.test(addition);
     if (completedThought && (transition || sentenceCount >= 4 || current.length >= 700)) flush();
     previous = cue;
   }
