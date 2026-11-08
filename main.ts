@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl, Platform } from 'obsidian';
+﻿import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl, Platform } from 'obsidian';
 
 type OutputMode = 'vtt' | 'plain' | 'both';
 type Category = 'broadcasting' | 'talks' | 'news-reports' | 'morning-worship' | 'other';
@@ -45,7 +45,15 @@ export default class JwSubtitlesPlugin extends Plugin {
         const category = categoryFor('', '', note.id);
         const year = parseYear(note.id, undefined, note.title || file.basename);
         const expectedFolder = normalizePath(`${root}/${folderFor(category)}/${year}`);
-        const expectedPath = normalizePath(`${expectedFolder}/${file.name}`);
+        let expectedName = file.name;
+        if (category === 'broadcasting') {
+          const { title: broadcastTitle } = parseTitleAndSpeaker(note.title || file.basename, category, note.id);
+          const m = broadcastTitle.match(/^(\w+\s+\d{4})\s*[:：]?\s*(.*)$/);
+          const monthYear = m ? m[1].trim() : broadcastTitle;
+          const rest = m ? m[2].trim() : '';
+          expectedName = `${safe(monthYear)} - JW Broadcasting${rest ? ` - ${safe(rest)}` : ''} - ${shortId(note.id)}.md`;
+        }
+        const expectedPath = normalizePath(`${expectedFolder}/${expectedName}`);
         const updatedContent = updateFrontmatter(note.content, category, year);
         if (file.path === expectedPath) {
           if (updatedContent !== content) await this.app.vault.modify(file, updatedContent);
@@ -116,7 +124,15 @@ export default class JwSubtitlesPlugin extends Plugin {
     await this.app.vault.createFolder(root).catch(() => undefined);
     await this.app.vault.createFolder(categoryDir).catch(() => undefined);
     await this.app.vault.createFolder(yearDir).catch(() => undefined);
-    const filename = `${safe(item.title)}${item.speaker ? ` - ${safe(item.speaker)}` : ''} - ${shortId(item.id)}.md`;
+    let filename: string;
+    if (item.category === 'broadcasting') {
+      const m = item.title.match(/^(\w+\s+\d{4})\s*[:：]?\s*(.*)$/);
+      const monthYear = m ? m[1].trim() : item.title;
+      const rest = m ? m[2].trim() : '';
+      filename = `${safe(monthYear)} - JW Broadcasting${rest ? ` - ${safe(rest)}` : ''} - ${shortId(item.id)}.md`;
+    } else {
+      filename = `${item.speaker ? `${safe(item.speaker)} - ` : ''}${safe(item.title)} - ${shortId(item.id)}.md`;
+    }
     const path = normalizePath(`${yearDir}/${filename}`);
     const transcript = vttToParagraphs(item.vtt);
     const sections = this.settings.outputMode === 'vtt' ? `## Subtitles\n\n${item.vtt.trim()}` : this.settings.outputMode === 'plain' ? `## Transcript\n\n${transcript}` : `## Subtitles\n\n${item.vtt.trim()}\n\n## Transcript\n\n${transcript}`;
@@ -182,22 +198,31 @@ function parseYear(id: string, firstPublished?: string, title?: string): number 
 }
 function parseTitleAndSpeaker(rawTitle: string, category: Category, id: string): { title: string; speaker?: string } {
   const clean = rawTitle.replace(/\s+-\s+Library(?:\s+-\s+JW\.ORG)?$/i, '').replace(/\s+-\s+JW\.ORG(?:\s+Videos)?(?:\s+English)?$/i, '').replace(/\s+/g, ' ').trim();
-  if (category === 'broadcasting') return { title: clean.replace(/^JW Broadcasting\s*[—-]\s*/i, '').trim() || id };
-  const match = clean.match(/^([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-.\s]+?):\s*(.+)$/);
+  if (category === 'broadcasting') {
+    const match = clean.match(/JW Broadcasting\s*[^\w\s]*\s*(\w+\s+\d{4})\s*[:：]?\s*(.*)/i);
+    if (match) {
+      const monthYear = match[1].trim();
+      const rest = match[2].trim();
+      return { title: rest ? `${monthYear}: ${rest}` : monthYear };
+    }
+    const fallback = clean.match(/(\w+\s+\d{4})/);
+    if (fallback) return { title: fallback[1].trim() };
+    return { title: clean || id };
+  }
+  const match = clean.match(/^([A-Z][A-Za-z\s'.\-]+?):\s*(.+)$/);
   return match ? { speaker: match[1].trim(), title: match[2].trim() } : { title: clean || id };
-}
-function shortId(id: string): string { return id.replace(/^(?:pub|docid)-/, '').replace(/_VIDEO$/i, ''); }
+}function shortId(id: string): string { return id.replace(/^(?:pub|docid)-/, '').replace(/_VIDEO$/i, ''); }
 
 interface Cue { start: number; end: number; text: string; speaker: boolean; }
 function vttToParagraphs(vtt: string): string {
   const cues = parseVtt(vtt); const paragraphs: string[] = []; let current = ''; let sentenceCount = 0; let previous: Cue | null = null;
   const flush = () => { const value = current.replace(/\s+/g, ' ').trim(); if (value) paragraphs.push(value); current = ''; sentenceCount = 0; };
-  for (const cue of cues) { const pause = previous ? cue.start - previous.end : 0; const transition = cue.speaker || pause >= 2.5; current = current ? `${current} ${cue.text}` : cue.text; if (/[.!?][”"']?$/.test(cue.text)) sentenceCount++; if (/[.!?][”"']?$/.test(cue.text) && (transition || sentenceCount >= 4 || current.length >= 700)) flush(); previous = cue; }
+  for (const cue of cues) { const pause = previous ? cue.start - previous.end : 0; const transition = cue.speaker || pause >= 2.5; current = current ? `${current} ${cue.text}` : cue.text; if (/[.!?][â€"']?$/.test(cue.text)) sentenceCount++; if (/[.!?][â€"']?$/.test(cue.text) && (transition || sentenceCount >= 4 || current.length >= 700)) flush(); previous = cue; }
   flush(); return paragraphs.join('\n\n');
 }
 function parseVtt(vtt: string): Cue[] {
   const cues: Cue[] = [];
-  for (const block of vtt.replace(/^WEBVTT[^\n]*\n?/i, '').split(/\r?\n\r?\n/)) { const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean); const index = lines.findIndex(line => line.includes('-->')); if (index < 0) continue; const [from, to] = lines[index].split('-->'); const text = decodeHtml(lines.slice(index + 1).join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); if (text) cues.push({ start: toSeconds(from), end: toSeconds(to.split(/\s+/)[0]), text, speaker: /^(?:[-–—]\s+|>>\s*)/.test(text) }); }
+  for (const block of vtt.replace(/^WEBVTT[^\n]*\n?/i, '').split(/\r?\n\r?\n/)) { const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean); const index = lines.findIndex(line => line.includes('-->')); if (index < 0) continue; const [from, to] = lines[index].split('-->'); const text = decodeHtml(lines.slice(index + 1).join(' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); if (text) cues.push({ start: toSeconds(from), end: toSeconds(to.split(/\s+/)[0]), text, speaker: /^(?:[-â€“â€”]\s+|>>\s*)/.test(text) }); }
   return cues;
 }
 function toSeconds(value: string): number { const parts = value.trim().replace(',', '.').split(':'); const seconds = Number(parts.pop() || 0); const minutes = Number(parts.pop() || 0); const hours = Number(parts.pop() || 0); return hours * 3600 + minutes * 60 + seconds; }
